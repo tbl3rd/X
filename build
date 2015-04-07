@@ -1,0 +1,88 @@
+#!/bin/sh
+
+set -e
+
+# Try one of the following build command lines.
+#
+# ./build ~/switch rack-c1-node3
+# ./build ~/switch rack-c1-node4
+
+function showUsage {
+    echo
+    echo "Usage: ${0##*/} <directory> <hostname> [<hostname> ...]"
+    echo 'Where: <directory> is the directory to use on Tilera for the'
+    echo '                   switch and tester source and build directory.'
+    echo '       <hostname> is a Tilera machine on which to build'
+    echo '                  the switch program and its tester program.'
+    echo "Example: ${EXAMPLE}"
+    echo
+}
+
+DEFAULTSWITCHHOSTNAMES='rack-c1-node3 rack-c1-node4'
+DEFAULTSWITCHHOSTNAMES=rack-c1-node4
+DEFAULTSWITCHHOSTNAMES=rack-c1-node2
+DEFAULTSWITCHDIRECTORY=~/switch
+
+EXAMPLE="${0##*/}"
+EXAMPLE="${EXAMPLE} ${DEFAULTSWITCHDIRECTORY}"
+EXAMPLE="${EXAMPLE} ${DEFAULTSWITCHHOSTNAMES}"
+if test $# -lt 1
+then
+    showUsage
+    exit 1
+fi
+
+SWITCHDIRECTORY="${1:-${DEFAULTSWITCHDIRECTORY}}"
+shift 1
+test -z "$1" && set -- ${DEFAULTSWITCHHOSTNAMES}
+
+TILERARELEASES=/lab/photon/tilera-releases
+TILERARELEASE=3.0.3T.141750-20120421_patched
+TILERA_ROOT_DEFAULT=${TILERARELEASES}/${TILERARELEASE}
+TILERA_ROOT=${TILERA_ROOT:-${TILERA_ROOT_DEFAULT}}
+TILEENV=${TILERA_ROOT}/bin/tile-env
+TILEMONITOR=${TILERA_ROOT}/bin/tile-monitor
+
+# Show the command line on stderr, then execute the command.
+#
+function showAndDo {
+    echo "${0##*/}:" "$@" 2>&1
+    "$@"
+}
+
+# Build the switch and tester programs on the hosts "$@".
+#
+function buildOn {
+    HVC="${TILERA_ROOT}/tile/etc/hvc/fast-xaui.hvc"
+    for host in "$@"
+    do
+        COMMANDLINE="${TILEMONITOR} --hvx TLR_NETWORK=gbe0"
+        COMMANDLINE="${COMMANDLINE} --hvd XGBE_0=1 --hvd XGBE_1=0"
+        COMMANDLINE="${COMMANDLINE} --hvd GBE_0=1 --hvd PCIE_0_RC=1"
+        COMMANDLINE="${COMMANDLINE} --hvx TLR_ROOT=/dev/sda3"
+        COMMANDLINE="${COMMANDLINE} --hvx isolcpus=2-63"
+        COMMANDLINE="${COMMANDLINE} --hvx cache_hash=ro"
+        COMMANDLINE="${COMMANDLINE} --hvx dataplane=2-63"
+        COMMANDLINE="${COMMANDLINE} --hvc ${HVC}"
+        COMMANDLINE="${COMMANDLINE} --net ${host}"
+        COMMANDLINE="${COMMANDLINE} --cd ${SWITCHDIRECTORY}"
+        COMMANDLINE="${COMMANDLINE} --run -+- make clean -+-"
+        COMMANDLINE="${COMMANDLINE} --run -+- pwd -+-"
+        COMMANDLINE="${COMMANDLINE} --run -+- make -+-"
+        # COMMANDLINE="${COMMANDLINE} --run -+- ${SWITCH} $@" -+-"
+        COMMANDLINE="${COMMANDLINE} --wait --quit"
+        # showAndDo /usr/bin/ipmitool -H${SWITCHHOSTNAME}-bmc \
+        #           -Uroot -Pchangeme -Ilanplus chassis power on
+        # COMMANDLINE="cd ${SWITCHDIRECTORY} && make clean && pwd && make"
+        # COMMANDLINE="${COMMANDLINE} --mkboot-args -+- --dump-hvc -+-"
+        showAndDo ssh root@${host} mkdir -p ${SWITCHDIRECTORY}
+        showAndDo eval $(${TILEENV})
+        showAndDo rsync -avz $(pwd)/ root@${host}:${SWITCHDIRECTORY}
+        showAndDo ${COMMANDLINE}
+        # showAndDo ssh root@${host} "${COMMANDLINE}"
+    done
+}
+
+echo ${0##*/}: Building ${SWITCHDIRECTORY} on hosts: "$@" 2>&1
+
+buildOn "$@"

@@ -1,0 +1,341 @@
+# Configuration file that enables the highest-performance XGBE drivers.
+#
+# See "vmlinux-pci.hvc" for a description of various standard variables
+# which can be set via the "--hvd" and "--hvx" options.
+#
+#
+# The full tile layout for an 8x8 tile grid is:
+#
+#    0    1    2    3    4    5    6    7
+# 0            PC1  PC0  X0I  X0I  X0I  X0I
+# 1                                     X0E
+# 2                                     G0I
+# 3                                     G0E
+# 4                                     G1E
+# 5                                     G1I
+# 6                                     X1E
+# 7  MP   GPIO DS   SU   X1I  X1I  X1I  X1I
+#
+#
+# The full tile layout for a 6x6 tile grid is:
+#
+#    0    1    2    3    4    5  
+# 0       PC0  X0I  X0I  X0I  X0I
+# 1                           X0E
+# 2                           G0I
+# 3                           G0E
+# 4                           G1E
+# 5  MP   GPIO DS   SU        G1I
+#
+#
+# where:
+# - PC0 is the pcie/0 tile
+# - PC1 is the pcie/1 tile
+# - X0I are the xgbe/0 IPP tiles
+# - X0E is the xgbe/0 IPP tile
+# - X1I,E are xgbe/1 IPP and EPP tiles
+# - G0I is the gbe/0 IPP tile
+# - G0E is the gbe/0 EPP tile
+# - G1I,E are the gbe/1 IPP and EPP tiles
+# - MP is the memprof tile
+# - GPIO is the gpio (Flex I/O) tile
+# - DS is the default shared tile
+# - SU is the Soft UART tile
+#
+
+
+# When booting via tile-monitor over PCIe, several variables are
+# extracted from properties in /dev/tilepciN/info, including
+# CHIP_VERSION, CHIP_WIDTH, CHIP_HEIGHT, and BOARD_HAS_PLX.  These can
+# also be set manually via "--hvd" options.
+#
+
+
+# Define common convenience variables.  For instance, we define
+# shorter variables for the chip height and the chip width, and a
+# convenient variable for the Y-coordinate of the bottom row.
+#
+define W $CHIP_WIDTH
+define H $CHIP_HEIGHT
+define BOTTOM $($H-1)
+define RIGHT $($W-1)
+
+
+# HACK: Support old "--hvd GBE" idiom.
+ifdef GBE
+define GBE_0 1
+define GBE_1 1
+endif
+
+
+# Handle CPU_SPEED, STRIPE_MEMORY, OPTIONS, and CONFIG_VERSION.
+
+include options.hvh
+
+
+# The default shared tile.
+
+options default_shared=0,0
+
+
+# Allow memprof.
+
+if defined(MEMPROF) && $MEMPROF
+device memprof memprof
+  dedicated 0,$BOTTOM
+endif
+
+
+# Enable srom.
+
+if !defined(SROM) || $SROM
+device srom/0 srom
+endif
+
+
+# Allow eeprom.
+# ISSUE: Why "I2C_EEPROM", vs just "EEPROM"?
+
+if defined(I2C_EEPROM) && $I2C_EEPROM
+device eeprom eeprom
+endif
+
+
+# Allow watchdog.
+
+if defined(WATCHDOG) && $WATCHDOG
+device watchdog watchdog 
+endif
+
+
+# Enable i2cm.
+
+if !defined(I2CM) || $I2CM
+device i2cm/0 i2cm
+endif
+
+
+# Allow softuart.
+# AMC cards might a Flex-I/O-connected serial device, which requires
+# the Soft UART driver.
+
+if defined(SOFT_UART) && $SOFT_UART
+device softuart/0 softuart
+   dedicated 3,$BOTTOM
+endif
+
+
+# Enable gpio (for Compact Flash, SSD, etc).
+
+if !defined(GPIO) || $GPIO
+
+device gpio/0 gpio
+  shared 1,$BOTTOM
+
+device gpio/1 gpio
+  shared 1,$BOTTOM
+
+device gpio/2 gpio
+  shared 1,$BOTTOM
+
+device gpio/3 gpio
+  shared 1,$BOTTOM
+
+endif
+
+
+
+# Determine devices based on PCIe board variables set automatically
+# when booting via "tile-monitor --pci".
+#
+# We use the BOARD_HAS_PLX property to distinguish between the
+# TILExpress-20G and TILExpress-10G cards (which have a PLX PCIe
+# switch), and the TILExpress-64 and TILExpress-36 cards (which do
+# not).
+#
+# We then use the CHIP_WIDTH property to distinguish between the
+# TILExpress-20G and TILExpress-64 cards (which have a 8x8 chip), and
+# the TILExpress-10G and TILExpress-36 cards (which have a 6x6 chip).
+
+
+ifdef BOARD_HAS_PLX
+
+if $BOARD_HAS_PLX
+#
+# TILExpress-20G / TILExpress-10G card.
+#
+
+ifndef PCIE_0
+define PCIE_0 1
+endif
+
+ifndef XGBE_0
+define XGBE_0 1
+endif
+
+if $W >= 8
+#
+# The TILExpress-20G card has two pcie and two xgbe interfaces.
+#
+
+ifndef PCIE_1
+define PCIE_1 1
+endif
+
+ifndef XGBE_1
+define XGBE_1 1
+endif
+
+endif
+
+else
+#
+# TILExpress-64 / TILExpress-36 cards.
+#
+# These cards have an onboard network switch, and GPIO signals connected to
+# a CompactFlash slot.  We enable the gbe since its MDIO connection is
+# required to configure the onboard network switch.
+#
+# While the TILExpress-64 card does have two xgbe devices, the connector
+# for xgbe/1 is not exposed on the card's backpanel.  This device is thus
+# infrequently used, so we do not configure it by default, but it can
+# be configured explicitly with "--hvd XGBE_1".
+#
+
+ifndef XGBE_0
+define XGBE_0 1
+endif
+
+# ISSUE: This conflicts with "GBE_0" below.
+device gbe/0
+  dedicated $RIGHT,2
+
+if $W >= 8
+#
+# The TILExpress-64 card has two pcie interfaces, but only pcie/1 is
+# connected to the edge connector on the card.
+#
+
+ifndef PCIE_1
+define PCIE_1 1
+endif
+
+else
+#
+# The TILExpress-36 card has one pcie interface, pcie/0
+#
+
+ifndef PCIE_0
+define PCIE_0 1
+endif
+
+endif
+
+endif
+
+endif
+
+
+# Allow pcie/0.
+
+if defined(PCIE_0) && $PCIE_0
+
+device pcie/0 pcie
+  dedicated $($RIGHT-5),0
+
+elif defined(PCIE_0_RC) && $PCIE_0_RC
+
+device pcie/0 pcie_rc
+  dedicated $($RIGHT-5),0
+ 
+endif
+
+
+# Allow pcie/1.
+
+if defined(PCIE_1) && $PCIE_1
+
+device pcie/1 pcie
+  dedicated $($RIGHT-6),0
+
+elif defined(PCIE_1_RC) && $PCIE_1_RC
+
+device pcie/1 pcie_rc
+  dedicated $($RIGHT-6),0
+
+endif
+
+
+# Default to "native_driver".
+
+ifndef XGBE_ARGS
+define XGBE_ARGS
+endif
+
+
+# Allow xgbe/0 (with ipp4_epp).
+
+if defined(XGBE_0) && $XGBE_0
+
+device xgbe/0 xgbe_ipp4_epp
+  dedicated $($W-4),0 $($W-3),0 $($W-2),0 $($W-1),0 $($W-1),1
+  args $XGBE_ARGS
+
+endif
+
+
+# Allow xgbe/1 (with ipp4_epp).
+
+if defined(XGBE_1) && $XGBE_1
+
+device xgbe/1 xgbe_ipp4_epp
+  dedicated $($W-4),$BOTTOM $($W-3),$BOTTOM $($W-2),$BOTTOM \
+    $($W-1),$BOTTOM $($W-1),$($BOTTOM-1) 
+  args $XGBE_ARGS
+
+endif
+
+
+# Default to "native_driver".
+
+ifndef GBE_ARGS
+define GBE_ARGS native_driver
+endif
+
+
+# Allow gbe/0.
+
+if defined(GBE_0) && $GBE_0
+
+device gbe/0 gbe_ipp1_epp
+  dedicated $RIGHT,2 $RIGHT,3
+  args $GBE_ARGS
+
+endif
+
+
+# Allow gbe/1.
+
+if defined(GBE_1) && $GBE_1
+
+device gbe/1 gbe_ipp1_epp
+  dedicated $RIGHT,4 $RIGHT,5
+  args $GBE_ARGS
+
+endif
+
+
+if !defined(VMLINUX) || $VMLINUX
+
+#
+# Run vmlinux on all non-dedicated tiles.
+#
+
+ifndef ARGS
+define ARGS
+endif
+
+client vmlinux
+  args $ARGS $XARGS
+
+endif
